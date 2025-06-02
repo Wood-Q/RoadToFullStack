@@ -14,7 +14,7 @@ import (
 	"github.com/elastic/go-elasticsearch/v8/typedapi/types/enums/densevectorsimilarity"
 )
 
-func main() {
+func IndexDoc() {
 	ctx := context.Background()
 	dims := 2560
 	similarity := densevectorsimilarity.Cosine
@@ -22,10 +22,8 @@ func main() {
 	//创建本地mapping
 	mapping := &types.TypeMapping{
 		Properties: map[string]types.Property{
-			"id":             types.NewLongNumberProperty(),
-			"title":          types.NewTextProperty(),
+			"id":             types.NewTextProperty(),
 			"content":        types.NewTextProperty(),
-			"extra_location": types.NewTextProperty(),
 			"content_dense_vector": &types.DenseVectorProperty{
 				Dims:       &dims,
 				Index:      &index,
@@ -51,7 +49,7 @@ func main() {
 	}
 
 	// 2. 确保索引存在
-	indexName := "my_es9"
+	indexName := "my_rag"
 
 	// 5. 创建索引器
 	indexer, err := es8.NewIndexer(ctx, &es8.IndexerConfig{
@@ -81,8 +79,8 @@ func main() {
 	// 6. 准备要存储的文档
 	docs := []*schema.Document{
 		{
-			ID:      "doc_1001",
-			Content: "doc_1001",
+			ID:      "doc_1",
+			Content: "明月班的花语是期末项目验收赶猪",
 		},
 	}
 

@@ -6,6 +6,7 @@ require (
 	github.com/apache/pulsar-client-go v0.14.0
 	github.com/cloudwego/eino v0.3.38
 	github.com/cloudwego/eino-ext/components/embedding/ark v0.0.0-20250527025003-c8588b6dc7a9
+	github.com/cloudwego/eino-ext/components/retriever/es8 v0.0.0-20250530094010-bd1c4fc20bbe
 	github.com/elastic/go-elasticsearch/v8 v8.18.0
 	github.com/elastic/go-elasticsearch/v9 v9.0.0
 )
@@ -18,7 +19,6 @@ require (
 	github.com/ardielle/ardielle-go v1.5.2 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/bits-and-blooms/bitset v1.22.0 // indirect
-	github.com/bytedance/mockey v1.2.13 // indirect
 	github.com/bytedance/sonic v1.13.2 // indirect
 	github.com/bytedance/sonic/loader v0.2.4 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
