@@ -5,24 +5,61 @@ import (
 	"fmt"
 	"log"
 
+	"github.com/elastic/go-elasticsearch/v8/typedapi/types"
+	"github.com/elastic/go-elasticsearch/v8/typedapi/types/enums/densevectorsimilarity"
 	"github.com/elastic/go-elasticsearch/v9"
+	"github.com/elastic/go-elasticsearch/v9/typedapi/indices/getmapping"
 )
 
-func ma() {
+func duibi() {
 	client, err := elasticsearch.NewTypedClient(elasticsearch.Config{
-		Addresses: []string{"http://localhost:9200"},
-		Username:  "elastic",
-		Password:  "LUB7jymz",
+		CloudID: "My_Elasticsearch_project:dXMtZWFzdC0xLmF3cy5lbGFzdGljLmNsb3VkJGRkY2Y0ZjY0NzRkYjRkOGU5MWEwZWI2YTEzODY4ZDAyLmVzJGRkY2Y0ZjY0NzRkYjRkOGU5MWEwZWI2YTEzODY4ZDAyLmti",
+		APIKey:  "bG5WZExKY0JZOXgtVk9YdnlrbEo6R0RzTkl5T0E0YVdPYjJlaWF3UEtsUQ==",
 	})
 	if err != nil {
 		panic(err)
 	}
-	// Create Index
-	res, err := client.Indices.Create("first_try").Do(context.Background())
+
+	req := getmapping.New(client.Transport)
+	req.Index("my_es9")
+	res, err := req.Do(context.Background())
 	if err != nil {
-		log.Panicf("create index err:%v", err)
+		log.Fatalf("Error getting mapping: %s", err)
 	}
-	fmt.Println("Create Index Succefully", res)
+
+	dims := 2560
+	index := true
+	similarity := densevectorsimilarity.Cosine
+
+	mapping := types.TypeMapping{
+		Properties: map[string]types.Property{
+			"content":       types.NewTextProperty(),
+			"extralocation": types.NewTextProperty(),
+			"content_dense_vector": &types.DenseVectorProperty{
+				Dims:       &dims,
+				Index:      &index,
+				Similarity: &similarity,
+			},
+		},
+	}
+
+	remoteMapping := res["my_es9"].Mappings.Properties
+
+	//对比remoteMapping和mapping，如果remoteMapping和mappingkey不匹配，则报错
+	for k, _ := range remoteMapping {
+		if _, ok := mapping.Properties[k]; !ok {
+			log.Fatalf("remoteMapping and mapping key not match: %s", k)
+		}
+	}
+
+	// 打印返回的 mapping
+	fmt.Printf("Mapping for index 'your-index-name':\n%v\n", res["my_es9"].Mappings.Properties)
+	// Create Index
+	// res, err := client.Indices.Create("first_try").Do(context.Background())
+	// if err != nil {
+	// 	log.Panicf("create index err:%v", err)
+	// }
+	// fmt.Println("Create Index Succefully", res)
 
 	//index a document
 	// document := struct {

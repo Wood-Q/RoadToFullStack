@@ -10,28 +10,29 @@ import (
 	"github.com/cloudwego/eino-ext/components/embedding/ark"
 	"github.com/cloudwego/eino/schema"
 	"github.com/elastic/go-elasticsearch/v8"
+	"github.com/elastic/go-elasticsearch/v8/typedapi/types"
+	"github.com/elastic/go-elasticsearch/v8/typedapi/types/enums/densevectorsimilarity"
 )
 
 func main() {
 	ctx := context.Background()
-	mapping := `{
-		"mappings": {
-			"properties": {
-				"content": {
-					"type": "text"
-				},
-				"extra_location": {
-					"type": "text"
-				},
-				"content_dense_vector": {
-					"type": "dense_vector",
-					"dims": 2580,
-					"index": true,
-					"similarity": "cosine"
-				}
-			}
-		}
-	}`
+	dims := 2560
+	similarity := densevectorsimilarity.Cosine
+	index := true
+	//创建本地mapping
+	mapping := &types.TypeMapping{
+		Properties: map[string]types.Property{
+			"id":             types.NewLongNumberProperty(),
+			"title":          types.NewTextProperty(),
+			"content":        types.NewTextProperty(),
+			"extra_location": types.NewTextProperty(),
+			"content_dense_vector": &types.DenseVectorProperty{
+				Dims:       &dims,
+				Index:      &index,
+				Similarity: &similarity,
+			},
+		},
+	}
 	// 创建 embedding 组件
 	embedder, err := ark.NewEmbedder(context.Background(), &ark.EmbeddingConfig{
 		APIKey: "56a6b406-8b6b-4bb5-b169-92117a5caa72",
@@ -50,29 +51,28 @@ func main() {
 	}
 
 	// 2. 确保索引存在
-	indexName := "search-e009"
+	indexName := "my_es9"
 
 	// 5. 创建索引器
 	indexer, err := es8.NewIndexer(ctx, &es8.IndexerConfig{
-		Client:    client,
-		Index:     indexName,
-		BatchSize: 5,
-		Embedding: embedder,
+		Client:       client,
+		Index:        indexName,
+		BatchSize:    5,
+		LocalMapping: mapping,
+		Embedding:    embedder,
 		DocumentToFields: func(ctx context.Context, doc *schema.Document) (field2Value map[string]es8.FieldValue, err error) {
 			return map[string]es8.FieldValue{
 				"id": {
 					Value: doc.ID,
 				},
-				"title": {
-					Value: doc.MetaData["title"],
-				},
 				"content": {
 					Value:    doc.Content,
-					EmbedKey: "content_dense_vector", // vectorize doc content and save vector to field "content_vector"
+					EmbedKey: "content_dense_vector",
 				},
 			}, nil
 		},
-		CustomMapping: mapping,
+		ValidationMode:    es8.ValidationModeWarn,
+		EnableSchemaCheck: true,
 	})
 	if err != nil {
 		log.Fatal(err)
@@ -81,22 +81,8 @@ func main() {
 	// 6. 准备要存储的文档
 	docs := []*schema.Document{
 		{
-			ID:      "doc_4",
-			Content: "这是关",
-		},
-		{
-			ID:      "doc_5",
-			Content: "学习的文档内容",
-			MetaData: map[string]any{
-				"title": "机器基础",
-			},
-		},
-		{
-			ID:      "doc_6",
-			Content: "这是关于深档内容",
-			MetaData: map[string]any{
-				"title": "深度原理",
-			},
+			ID:      "doc_1001",
+			Content: "doc_1001",
 		},
 	}
 
@@ -108,26 +94,4 @@ func main() {
 	}
 
 	fmt.Printf("成功存储 %d 个文档，IDs: %v\n", len(ids), ids)
-
-	// 8. 验证存储结果
-	if err := verifyStorage(client, indexName, ids); err != nil {
-		log.Printf("验证存储结果失败: %v", err)
-	} else {
-		fmt.Println("所有文档已成功存储到Elasticsearch!")
-	}
-}
-
-// 验证文档是否成功存储
-func verifyStorage(client *elasticsearch.Client, indexName string, docIDs []string) error {
-	for _, id := range docIDs {
-		res, err := client.Get(indexName, id)
-		if err != nil {
-			return fmt.Errorf("获取文档 %s 失败: %w", id, err)
-		}
-		if res.StatusCode == 404 {
-			return fmt.Errorf("文档 %s 未找到", id)
-		}
-		fmt.Printf("✓ 文档 %s 存储成功\n", id)
-	}
-	return nil
 }

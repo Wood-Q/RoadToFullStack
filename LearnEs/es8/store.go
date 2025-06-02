@@ -21,6 +21,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 
@@ -31,10 +32,26 @@ import (
 	"github.com/cloudwego/eino/schema"
 	"github.com/elastic/go-elasticsearch/v8"
 	"github.com/elastic/go-elasticsearch/v8/esutil"
+	"github.com/elastic/go-elasticsearch/v8/typedapi/indices/getmapping"
+	"github.com/elastic/go-elasticsearch/v8/typedapi/types"
+	densevectorsimilarity "github.com/elastic/go-elasticsearch/v8/typedapi/types/enums/densevectorsimilarity"
+	"github.com/elastic/go-elasticsearch/v8/typedapi/types/enums/dynamicmapping"
 )
 
 const defaultBatchSize = 5
 const typ = "es8_indexer"
+
+// MappingValidationMode defines how to handle mapping validation failures
+type MappingValidationMode int
+
+const (
+	// ValidationModeError raises error when validation fails
+	ValidationModeError MappingValidationMode = iota
+	// ValidationModeWarn logs warning when validation fails
+	ValidationModeWarn
+	// ValidationModeSkip skips validation entirely
+	ValidationModeSkip
+)
 
 type IndexerConfig struct {
 	Client *elasticsearch.Client `json:"client"`
@@ -51,9 +68,16 @@ type IndexerConfig struct {
 	// 1. VectorFields contains fields except doc Content
 	// 2. VectorFields contains doc Content and vector not provided in doc extra (see Document.Vector method)
 	Embedding embedding.Embedder
-	// CustomMapping allows users to provide custom index mapping
-	// If not provided, default mapping will be used
-	CustomMapping string `json:"custom_mapping"`
+
+	// LocalMapping defines the expected index structure using official types.TypeMapping
+	LocalMapping *types.TypeMapping `json:"local_mapping"`
+	// Dynamic setting for the index mapping (optional)
+	Dynamic *dynamicmapping.DynamicMapping `json:"dynamic"`
+	// ValidationMode controls how mapping validation failures are handled
+	// Default is ValidationModeError
+	ValidationMode MappingValidationMode `json:"validation_mode"`
+	// EnableSchemaCheck enables document schema validation before indexing
+	EnableSchemaCheck bool `json:"enable_schema_check"`
 }
 
 type FieldValue struct {
@@ -72,223 +96,312 @@ type Indexer struct {
 	config *IndexerConfig
 }
 
-// getDefaultMapping returns the default index mapping
-func getDefaultMapping() string {
-	return `{
-		"mappings": {
-			"properties": {
-				"content": {
-					"type": "text"
-				},
-				"extra_location": {
-					"type": "text"
-				},
-				"content_dense_vector": {
-					"type": "dense_vector",
-					"dims": 2560,
-					"index": true,
-					"similarity": "cosine"
-				}
-			}
-		}
-	}`
+// getDefaultMapping returns the default index mapping using types.TypeMapping
+func getDefaultMapping() *types.TypeMapping {
+	dims := 2560
+	index := true
+	similarity := densevectorsimilarity.Cosine
+
+	return &types.TypeMapping{
+		Properties: map[string]types.Property{
+			"content":        types.NewTextProperty(),
+			"extra_location": types.NewTextProperty(),
+			"content_dense_vector": &types.DenseVectorProperty{
+				Dims:       &dims,
+				Index:      &index,
+				Similarity: &similarity,
+			},
+		},
+	}
 }
 
-// createIndexIfNotExists 检查索引是否存在，不存在则创建默认索引
-func (i *Indexer) createIndexIfNotExists(ctx context.Context) error {
+// getRemoteMapping retrieves mapping from Elasticsearch for the specified index
+func (i *Indexer) getRemoteMapping(ctx context.Context) (map[string]types.Property, *dynamicmapping.DynamicMapping, error) {
 	indexName := i.config.Index
 
-	// 1. 检查索引是否存在
+	req := getmapping.New(i.client.Transport)
+	req.Index(indexName)
+	res, err := req.Do(ctx)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to get mapping for index %s: %w", indexName, err)
+	}
+
+	indexMapping, exists := res[indexName]
+	if !exists {
+		return nil, nil, fmt.Errorf("index %s not found in mapping response", indexName)
+	}
+
+	properties := indexMapping.Mappings.Properties
+	dynamic := indexMapping.Mappings.Dynamic
+
+	fmt.Printf("远程索引 %s mapping 获取成功，字段数量: %d\n", indexName, len(properties))
+	if dynamic != nil {
+		fmt.Printf("远程索引 dynamic 设置: %v\n", *dynamic)
+	}
+
+	return properties, dynamic, nil
+}
+
+// ensureIndex ensures the index exists, creates it if not, and validates mapping consistency
+func (i *Indexer) ensureIndex(ctx context.Context) error {
+	indexName := i.config.Index
+
+	// 1. Check if index exists
 	res, err := i.client.Indices.Exists([]string{indexName})
 	if err != nil {
 		return fmt.Errorf("failed to check if index exists: %w", err)
 	}
 
 	if res.StatusCode == 404 {
-		// 2. 索引不存在，创建默认索引
-		fmt.Printf("索引 %s 不存在，正在创建默认索引...\n", indexName)
-
-		// 使用默认mapping创建索引
-		defaultMapping := getDefaultMapping()
-
-		createRes, err := i.client.Indices.Create(
-			indexName,
-			i.client.Indices.Create.WithBody(strings.NewReader(defaultMapping)),
-			i.client.Indices.Create.WithContext(ctx),
-		)
-		if err != nil {
-			return fmt.Errorf("failed to create index %s: %w", indexName, err)
-		}
-		defer createRes.Body.Close()
-
-		if createRes.IsError() {
-			var createError map[string]interface{}
-			if err := json.NewDecoder(createRes.Body).Decode(&createError); err == nil {
-				return fmt.Errorf("failed to create index %s: %v", indexName, createError)
-			}
-			return fmt.Errorf("failed to create index %s: %s", indexName, createRes.String())
-		}
-
-		fmt.Printf("✓ 成功创建默认索引 %s\n", indexName)
-		return nil
+		// 2. Index doesn't exist, create it
+		fmt.Printf("索引 %s 不存在，正在创建...\n", indexName)
+		return i.createIndexWithLocalMapping(ctx)
 	}
 
 	if res.StatusCode != 200 {
 		return fmt.Errorf("unexpected response when checking index existence: %s", res.String())
 	}
 
-	// 3. 索引存在，检查用户是否提供了自定义mapping
-	if i.config.CustomMapping != "" {
-		fmt.Printf("索引 %s 已存在，正在验证mapping一致性...\n", indexName)
-		if err := i.validateIndexMapping(ctx); err != nil {
-			return fmt.Errorf("索引mapping不一致: %w", err)
+	// 3. Index exists, validate mapping if needed
+	fmt.Printf("索引 %s 已存在\n", indexName)
+
+	if i.config.ValidationMode != ValidationModeSkip && i.config.LocalMapping != nil {
+		if err := i.validateMappingConsistency(ctx); err != nil {
+			switch i.config.ValidationMode {
+			case ValidationModeError:
+				return fmt.Errorf("mapping validation failed: %w", err)
+			case ValidationModeWarn:
+				log.Printf("警告: mapping validation failed: %v", err)
+			}
+		} else {
+			fmt.Printf("✓ 索引 %s mapping 验证通过\n", indexName)
 		}
-		fmt.Printf("✓ 索引 %s mapping验证通过\n", indexName)
-	} else {
-		fmt.Printf("✓ 索引 %s 已存在，未提供自定义mapping，跳过验证\n", indexName)
 	}
 
 	return nil
 }
 
-// validateIndexMapping 验证现有索引mapping与用户自定义mapping是否一致
-func (i *Indexer) validateIndexMapping(ctx context.Context) error {
-
-	// 获取现有索引的mapping
-	currentProperties, err := i.getCurrentIndexMapping(ctx)
-	if err != nil {
-		return fmt.Errorf("获取当前索引mapping失败: %w", err)
-	}
-
-	// 解析用户自定义mapping
-	expectedProperties, err := i.parseCustomMapping()
-	if err != nil {
-		return fmt.Errorf("解析自定义mapping失败: %w", err)
-	}
-
-	// 比较mapping结构
-	return i.compareMappings(currentProperties, expectedProperties)
-}
-
-// getCurrentIndexMapping 获取当前索引的mapping
-func (i *Indexer) getCurrentIndexMapping(ctx context.Context) (map[string]interface{}, error) {
+// createIndexWithLocalMapping creates index using local mapping definition
+func (i *Indexer) createIndexWithLocalMapping(ctx context.Context) error {
 	indexName := i.config.Index
 
-	res, err := i.client.Indices.GetMapping(
-		i.client.Indices.GetMapping.WithIndex(indexName),
-		i.client.Indices.GetMapping.WithContext(ctx),
+	// Use default mapping if no local mapping is provided
+	mapping := i.config.LocalMapping
+	if mapping == nil {
+		mapping = getDefaultMapping()
+		fmt.Println("使用默认 mapping 创建索引")
+	}
+
+	// Prepare index settings
+	indexBody := map[string]interface{}{
+		"mappings": map[string]interface{}{
+			"properties": mapping.Properties,
+		},
+	}
+
+	// Add dynamic setting if configured
+	if i.config.Dynamic != nil {
+		indexBody["mappings"].(map[string]interface{})["dynamic"] = *i.config.Dynamic
+		fmt.Printf("设置 dynamic 模式: %v\n", *i.config.Dynamic)
+	}
+
+	// Serialize to JSON
+	jsonBody, err := json.Marshal(indexBody)
+	if err != nil {
+		return fmt.Errorf("failed to marshal index mapping: %w", err)
+	}
+
+	// Create index
+	createRes, err := i.client.Indices.Create(
+		indexName,
+		i.client.Indices.Create.WithBody(strings.NewReader(string(jsonBody))),
+		i.client.Indices.Create.WithContext(ctx),
 	)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get mapping for index %s: %w", indexName, err)
+		return fmt.Errorf("failed to create index %s: %w", indexName, err)
 	}
-	defer res.Body.Close()
+	defer createRes.Body.Close()
 
-	if res.IsError() {
-		return nil, fmt.Errorf("failed to get mapping for index %s: %s", indexName, res.String())
-	}
-
-	var mappingResponse map[string]interface{}
-	if err := json.NewDecoder(res.Body).Decode(&mappingResponse); err != nil {
-		return nil, fmt.Errorf("failed to decode mapping response: %w", err)
-	}
-
-	// 提取当前mapping的properties
-	indexMapping, ok := mappingResponse[indexName].(map[string]interface{})
-	if !ok {
-		return nil, fmt.Errorf("invalid mapping response structure for index %s", indexName)
-	}
-
-	mappings, ok := indexMapping["mappings"].(map[string]interface{})
-	if !ok {
-		return nil, fmt.Errorf("no mappings found for index %s", indexName)
-	}
-
-	properties, ok := mappings["properties"].(map[string]interface{})
-	if !ok {
-		return nil, fmt.Errorf("no properties found in mappings for index %s", indexName)
-	}
-
-	fmt.Println("当前远程mapping为：", properties)
-
-	return properties, nil
-}
-
-// parseCustomMapping 解析用户自定义mapping
-func (i *Indexer) parseCustomMapping() (map[string]interface{}, error) {
-	var customMappingStruct map[string]interface{}
-	if err := json.Unmarshal([]byte(i.config.CustomMapping), &customMappingStruct); err != nil {
-		return nil, fmt.Errorf("failed to parse custom mapping: %w", err)
-	}
-
-	mappings, ok := customMappingStruct["mappings"].(map[string]interface{})
-	if !ok {
-		return nil, fmt.Errorf("invalid custom mapping structure: no 'mappings' field")
-	}
-
-	properties, ok := mappings["properties"].(map[string]interface{})
-	if !ok {
-		return nil, fmt.Errorf("invalid custom mapping structure: no 'properties' field in mappings")
-	}
-
-	return properties, nil
-}
-
-// compareMappings 比较两个mapping的properties是否一致
-func (i *Indexer) compareMappings(currentProperties, expectedProperties map[string]interface{}) error {
-	// 检查自定义mapping中定义的所有字段是否在当前索引中存在且类型匹配
-	for fieldName, expectedField := range expectedProperties {
-		expectedFieldMap, ok := expectedField.(map[string]interface{})
-		if !ok {
-			continue // 跳过无效的字段定义
+	if createRes.IsError() {
+		var createError map[string]interface{}
+		if err := json.NewDecoder(createRes.Body).Decode(&createError); err == nil {
+			return fmt.Errorf("failed to create index %s: %v", indexName, createError)
 		}
+		return fmt.Errorf("failed to create index %s: %s", indexName, createRes.String())
+	}
 
-		// 检查字段是否存在
-		currentField, exists := currentProperties[fieldName]
+	fmt.Printf("✓ 成功创建索引 %s\n", indexName)
+	return nil
+}
+
+// validateMappingConsistency validates consistency between local and remote mappings
+func (i *Indexer) validateMappingConsistency(ctx context.Context) error {
+	remoteProperties, remoteDynamic, err := i.getRemoteMapping(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to get remote mapping: %w", err)
+	}
+
+	localProperties := i.config.LocalMapping.Properties
+
+	fmt.Printf("开始对比 mapping 一致性...\n")
+	fmt.Printf("本地字段数量: %d, 远程字段数量: %d\n", len(localProperties), len(remoteProperties))
+
+	// Validate field consistency
+	if err := i.validateFieldConsistency(localProperties, remoteProperties); err != nil {
+		return err
+	}
+
+	// Validate dynamic setting consistency
+	if err := i.validateDynamicConsistency(remoteDynamic); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// validateFieldConsistency compares local and remote field definitions
+func (i *Indexer) validateFieldConsistency(localProperties, remoteProperties map[string]types.Property) error {
+	// Check if all local fields exist in remote mapping with correct types
+	for fieldName, localProp := range localProperties {
+		remoteProp, exists := remoteProperties[fieldName]
 		if !exists {
-			return fmt.Errorf("字段 '%s' 在当前索引中不存在，但在自定义mapping中有定义", fieldName)
+			return fmt.Errorf("字段 '%s' 在远程索引中不存在", fieldName)
 		}
 
-		currentFieldMap, ok := currentField.(map[string]interface{})
+		if err := i.comparePropertyTypes(fieldName, localProp, remoteProp); err != nil {
+			return err
+		}
+	}
+
+	// Check for extra fields in remote mapping (warning only)
+	for fieldName := range remoteProperties {
+		if _, exists := localProperties[fieldName]; !exists {
+			fmt.Printf("警告: 远程索引包含本地未定义的字段 '%s'\n", fieldName)
+		}
+	}
+
+	return nil
+}
+
+// comparePropertyTypes compares property types between local and remote
+func (i *Indexer) comparePropertyTypes(fieldName string, localProp, remoteProp types.Property) error {
+	// Handle different property types
+	switch local := localProp.(type) {
+	case *types.TextProperty:
+		if _, ok := remoteProp.(*types.TextProperty); !ok {
+			return fmt.Errorf("字段 '%s' 类型不匹配: 期望 text, 远程为其他类型", fieldName)
+		}
+	case *types.DenseVectorProperty:
+		remote, ok := remoteProp.(*types.DenseVectorProperty)
 		if !ok {
-			return fmt.Errorf("字段 '%s' 的结构无效", fieldName)
+			return fmt.Errorf("字段 '%s' 类型不匹配: 期望 dense_vector, 远程为其他类型", fieldName)
 		}
-
-		// 比较字段类型
-		expectedType, hasExpectedType := expectedFieldMap["type"]
-		currentType, hasCurrentType := currentFieldMap["type"]
-
-		if hasExpectedType && hasCurrentType {
-			if expectedType != currentType {
-				return fmt.Errorf("字段 '%s' 类型不匹配: 期望类型=%v, 当前类型=%v",
-					fieldName, expectedType, currentType)
-			}
+		// Compare dimensions
+		if local.Dims != nil && remote.Dims != nil && *local.Dims != *remote.Dims {
+			return fmt.Errorf("字段 '%s' 向量维度不匹配: 期望 %d, 远程为 %d",
+				fieldName, *local.Dims, *remote.Dims)
 		}
-
-		// 对于dense_vector类型，检查维度是否匹配
-		if expectedType == "dense_vector" {
-			expectedDims, hasExpectedDims := expectedFieldMap["dims"]
-			currentDims, hasCurrentDims := currentFieldMap["dims"]
-
-			if hasExpectedDims && hasCurrentDims {
-				if expectedDims != currentDims {
-					return fmt.Errorf("字段 '%s' 向量维度不匹配: 期望维度=%v, 当前维度=%v",
-						fieldName, expectedDims, currentDims)
+		// Compare similarity
+		if local.Similarity != nil && remote.Similarity != nil && *local.Similarity != *remote.Similarity {
+			return fmt.Errorf("字段 '%s' 相似度算法不匹配: 期望 %v, 远程为 %v",
+				fieldName, *local.Similarity, *remote.Similarity)
+		}
+	case *types.ObjectProperty:
+		remote, ok := remoteProp.(*types.ObjectProperty)
+		if !ok {
+			return fmt.Errorf("字段 '%s' 类型不匹配: 期望 object, 远程为其他类型", fieldName)
+		}
+		// Recursively validate nested properties
+		if local.Properties != nil && remote.Properties != nil {
+			for nestedName, nestedLocal := range local.Properties {
+				if nestedRemote, exists := remote.Properties[nestedName]; exists {
+					if err := i.comparePropertyTypes(fmt.Sprintf("%s.%s", fieldName, nestedName),
+						nestedLocal, nestedRemote); err != nil {
+						return err
+					}
+				} else {
+					return fmt.Errorf("嵌套字段 '%s.%s' 在远程索引中不存在", fieldName, nestedName)
 				}
 			}
 		}
-
-		// 可以根据需要添加更多字段属性的检查，如analyzer等
+	case *types.LongNumberProperty:
+		if _, ok := remoteProp.(*types.LongNumberProperty); !ok {
+			return fmt.Errorf("字段 '%s' 类型不匹配: 期望 long, 远程为其他类型", fieldName)
+		}
+	case *types.DoubleNumberProperty:
+		if _, ok := remoteProp.(*types.DoubleNumberProperty); !ok {
+			return fmt.Errorf("字段 '%s' 类型不匹配: 期望 double, 远程为其他类型", fieldName)
+		}
+	case *types.BooleanProperty:
+		if _, ok := remoteProp.(*types.BooleanProperty); !ok {
+			return fmt.Errorf("字段 '%s' 类型不匹配: 期望 boolean, 远程为其他类型", fieldName)
+		}
+	// Add more property types as needed
+	default:
+		fmt.Printf("警告: 字段 '%s' 的类型验证尚未实现\n", fieldName)
 	}
 
-	// 可选：检查当前索引是否有自定义mapping中未定义的字段（警告级别）
-	for fieldName := range currentProperties {
-		if _, exists := expectedProperties[fieldName]; !exists {
-			fmt.Printf("警告: 当前索引中存在字段 '%s'，但在自定义mapping中未定义\n", fieldName)
+	return nil
+}
+
+// validateDynamicConsistency validates dynamic setting consistency
+func (i *Indexer) validateDynamicConsistency(remoteDynamic *dynamicmapping.DynamicMapping) error {
+	if i.config.Dynamic == nil {
+		// Local doesn't specify dynamic, skip validation
+		return nil
+	}
+
+	if remoteDynamic == nil {
+		return fmt.Errorf("本地配置了 dynamic 设置为 %v，但远程索引未设置 dynamic", *i.config.Dynamic)
+	}
+
+	if *i.config.Dynamic != *remoteDynamic {
+		return fmt.Errorf("dynamic 设置不一致: 期望 %v, 远程为 %v", *i.config.Dynamic, *remoteDynamic)
+	}
+
+	fmt.Printf("✓ dynamic 设置验证通过: %v\n", *i.config.Dynamic)
+	return nil
+}
+
+// validateDocumentSchema validates document against expected schema (if enabled)
+func (i *Indexer) validateDocumentSchema(ctx context.Context, doc *schema.Document) error {
+	if !i.config.EnableSchemaCheck || i.config.LocalMapping == nil {
+		return nil
+	}
+
+	fields, err := i.config.DocumentToFields(ctx, doc)
+	if err != nil {
+		return fmt.Errorf("failed to get document fields: %w", err)
+	}
+
+	expectedFields := i.config.LocalMapping.Properties
+
+	// Check for missing required fields
+	for expectedField := range expectedFields {
+		found := false
+		for _, fieldValue := range fields {
+			if fieldValue.EmbedKey == expectedField {
+				found = true
+				break
+			}
+		}
+		if !found {
+			if _, directExists := fields[expectedField]; !directExists {
+				fmt.Printf("警告: 文档 %s 缺少期望字段 '%s'\n", doc.ID, expectedField)
+			}
+		}
+	}
+
+	// Check for unexpected fields
+	for fieldName := range fields {
+		if _, expected := expectedFields[fieldName]; !expected {
+			fmt.Printf("警告: 文档 %s 包含未定义字段 '%s'\n", doc.ID, fieldName)
 		}
 	}
 
 	return nil
 }
+
 func NewIndexer(ctx context.Context, conf *IndexerConfig) (*Indexer, error) {
 	if conf.Client == nil {
 		return nil, fmt.Errorf("[NewIndexer] es client not provided")
@@ -311,6 +424,11 @@ func NewIndexer(ctx context.Context, conf *IndexerConfig) (*Indexer, error) {
 		return nil, fmt.Errorf("[NewIndexer] batch size %d is too large, maximum recommended is 1000", conf.BatchSize)
 	}
 
+	// Set default validation mode
+	if conf.ValidationMode == 0 {
+		conf.ValidationMode = ValidationModeError
+	}
+
 	// Test connection to Elasticsearch
 	if _, err := conf.Client.Info(); err != nil {
 		return nil, fmt.Errorf("[NewIndexer] failed to connect to Elasticsearch: %w", err)
@@ -321,8 +439,8 @@ func NewIndexer(ctx context.Context, conf *IndexerConfig) (*Indexer, error) {
 		config: conf,
 	}
 
-	// Create index if not exists or validate mapping
-	if err := indexer.createIndexIfNotExists(ctx); err != nil {
+	// Ensure index exists and validate mapping
+	if err := indexer.ensureIndex(ctx); err != nil {
 		return nil, fmt.Errorf("[NewIndexer] index setup failed: %w", err)
 	}
 
@@ -341,6 +459,15 @@ func (i *Indexer) Store(ctx context.Context, docs []*schema.Document, opts ...in
 	options := indexer.GetCommonOptions(&indexer.Options{
 		Embedding: i.config.Embedding,
 	}, opts...)
+
+	// Validate documents against schema if enabled
+	if i.config.EnableSchemaCheck {
+		for _, doc := range docs {
+			if err := i.validateDocumentSchema(ctx, doc); err != nil {
+				return nil, fmt.Errorf("document schema validation failed for %s: %w", doc.ID, err)
+			}
+		}
+	}
 
 	if err = i.bulkAdd(ctx, docs, options); err != nil {
 		return nil, err
