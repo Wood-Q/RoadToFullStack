@@ -1,0 +1,22 @@
+# nginx-deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nginx-deployment
+  labels:
+    app: nginx
+spec:
+  replicas: 2 # 运行两个 Nginx Pod
+  selector:
+    matchLabels:
+      app: nginx
+  template:
+    metadata:
+      labels:
+        app: nginx
+    spec:
+      containers:
+        - name: nginx
+          image: nginx:latest # 使用最新的 Nginx 镜像
+          ports:
+            - containerPort: 80 # Nginx 默认监听 80 端口

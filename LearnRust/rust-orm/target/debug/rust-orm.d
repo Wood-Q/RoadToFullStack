@@ -1,0 +1,1 @@
+/Users/bytedance/woodq/RoadToFullStack/LearnRust/rust-orm/target/debug/rust-orm: /Users/bytedance/woodq/RoadToFullStack/LearnRust/rust-orm/migrations/2025-07-08-123905_create_users/down.sql /Users/bytedance/woodq/RoadToFullStack/LearnRust/rust-orm/migrations/2025-07-08-123905_create_users/up.sql /Users/bytedance/woodq/RoadToFullStack/LearnRust/rust-orm/src/main.rs

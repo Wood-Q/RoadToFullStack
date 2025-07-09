@@ -1,0 +1,14 @@
+# nginx-nodeport-service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: nginx-nodeport-service
+spec:
+  type: NodePort # 指定 Service 类型为 NodePort
+  selector:
+    app: nginx # 选择带有 app: nginx 标签的 Pod
+  ports:
+    - protocol: TCP
+      port: 80 # Service 内部端口
+      targetPort: 80 # Pod 监听的端口
+      nodePort: 30080 # 可选：指定一个 NodePort 端口，范围 30000-32767
