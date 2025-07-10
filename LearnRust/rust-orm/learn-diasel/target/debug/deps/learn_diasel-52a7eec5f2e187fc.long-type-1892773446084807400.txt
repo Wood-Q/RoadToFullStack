@@ -1,0 +1,3 @@
+(diesel::sql_types::Integer, diesel::sql_types::Text, diesel::sql_types::Text, diesel::sql_types::Bool)
+{type error}: FromSqlRow<(diesel::sql_types::Integer, diesel::sql_types::Text, diesel::sql_types::Text, diesel::sql_types::Bool), Sqlite>
+UpdateStatement<table, diesel::query_builder::where_clause::WhereClause<expression::grouped::Grouped<expression::operators::Eq<columns::id, expression::bound::Bound<diesel::sql_types::Integer, i32>>>>, diesel::query_builder::update_statement::changeset::Assign<diesel::query_builder::update_statement::changeset::ColumnWrapperForUpdate<columns::title>, expression::bound::Bound<diesel::sql_types::Text, &str>>>
