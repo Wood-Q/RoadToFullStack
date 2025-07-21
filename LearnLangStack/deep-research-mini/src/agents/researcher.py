@@ -6,7 +6,7 @@ from src.tools.web_search import web_search
 # 加入prompt
 from src.prompts.template import apply_prompt_template
 
-research = create_react_agent(
+researcher = create_react_agent(
     chat_model,
     tools=[web_search, web_crawl],
     prompt=apply_prompt_template("researcher"),
