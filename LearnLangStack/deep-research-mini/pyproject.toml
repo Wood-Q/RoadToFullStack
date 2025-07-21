@@ -12,5 +12,6 @@ dependencies = [
     "langchain-tavily>=0.2.10",
     "langgraph>=0.5.3",
     "langgraph-supervisor>=0.0.27",
+    "prompts>=0.0.1",
     "socksio>=1.0.0",
 ]

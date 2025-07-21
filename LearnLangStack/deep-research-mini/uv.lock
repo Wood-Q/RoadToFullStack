@@ -247,6 +247,7 @@ dependencies = [
     { name = "langchain-tavily" },
     { name = "langgraph" },
     { name = "langgraph-supervisor" },
+    { name = "prompts" },
     { name = "socksio" },
 ]
 
@@ -259,6 +260,7 @@ requires-dist = [
     { name = "langchain-tavily", specifier = ">=0.2.10" },
     { name = "langgraph", specifier = ">=0.5.3" },
     { name = "langgraph-supervisor", specifier = ">=0.0.27" },
+    { name = "prompts", specifier = ">=0.0.1" },
     { name = "socksio", specifier = ">=1.0.0" },
 ]
 
@@ -960,6 +962,14 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/a1/d4/1fc4078c65507b51b96ca8f8c3ba19e6a61c8253c72794544580a7b6c24d/packaging-25.0.tar.gz", hash = "sha256:d443872c98d677bf60f6a1f2f8c1cb748e8fe762d2bf9d3148b5599295b0fc4f", size = 165727, upload-time = "2025-04-19T11:48:59.673Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/20/12/38679034af332785aac8774540895e234f4d07f7545804097de4b666afd8/packaging-25.0-py3-none-any.whl", hash = "sha256:29572ef2b1f17581046b3a2227d5c611fb25ec70ca1ba8554b24b0e69331a484", size = 66469, upload-time = "2025-04-19T11:48:57.875Z" },
+]
+
+[[package]]
+name = "prompts"
+version = "0.0.1"
+source = { registry = "https://pypi.org/simple" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/d1/58/2ff14f9245621d2f8b411525c0fc8e557224eaf2723029d5b852da376216/prompts-0.0.1-py3-none-any.whl", hash = "sha256:7cc240be453c512439c00b2145cd1f3aa3796a031661ed4a52f9ab5a060ffb19", size = 1227, upload-time = "2021-05-10T12:08:34.381Z" },
 ]
 
 [[package]]
