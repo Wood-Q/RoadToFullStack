@@ -1,0 +1,5 @@
+CREATE TABLE journal (
+  id INTEGER PRIMARY KEY NOT NULL,
+  title VARCHAR NOT NULL,
+  body TEXT NOT NULL
+);
