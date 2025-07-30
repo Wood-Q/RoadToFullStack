@@ -8,6 +8,16 @@ use tokio::net::{TcpListener, TcpStream};
 
 type Db = Arc<Mutex<HashMap<String, Bytes>>>;
 
+type ShardedDb= Arc<Vec<Mutex<HashMap<String,Vec<u8>>>>>;
+
+fn new_shared_db(num_shards:usize)->ShardedDb{
+    let mut db=Vec::with_capacity(num_shards);
+    for _ in 0..num_shards{
+        db.push(Mutex::new(HashMap::new()));
+    }
+    Arc::new(db)
+}
+
 #[tokio::main]
 async fn main() {
     let listener = TcpListener::bind("127.0.0.1:6379").await.unwrap();

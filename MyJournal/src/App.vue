@@ -1,9 +1,11 @@
 <template>
-  <div class="app-grid-container">
+  <div class="app-container">
     <TopNavbar />
-    <Sidebar />
-    <MdEditor />
-    <RightToolbar />
+    <div class="main-content">
+      <Sidebar />
+      <MdEditor />
+      <RightToolbar />
+    </div>
     <Toast />
   </div>
 </template>
@@ -17,21 +19,50 @@ import Toast from "./components/Toast.vue";
 </script>
 
 <style scoped>
-.app-grid-container {
-  display: grid;
-  grid-template-columns: 18% 1fr 18%; /* Sidebar, Editor, Toolbar */
-  grid-template-rows: 60px 1fr; /* TopNav, Main Content */
-  grid-template-areas:
-    "sidebar top-nav top-nav"
-    "sidebar editor right-toolbar";
+.app-container {
+  display: flex;
+  flex-direction: column;
   height: 100vh;
   width: 100vw;
-  background-color: #1e1e1e;
+  background: linear-gradient(135deg, #1a1a1a 0%, #2d2d2d 100%);
+  color: #e0e0e0;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica,
+    Arial, sans-serif;
 }
 
-/* Assign components to grid areas */
-/* Note: These selectors will work if the child components have a single root element. 
-   We will need to assign the grid-area property directly in the child components' styles. 
-   This is a better practice for component-based architectures. 
-   I will add the grid-area property to each component in the next steps. */
+.main-content {
+  display: grid;
+  grid-template-columns: 280px 1fr 320px;
+  grid-template-areas: "sidebar editor toolbar";
+  flex: 1;
+  gap: 1px;
+  background-color: #333;
+  padding: 1px;
+  overflow: hidden;
+}
+
+/* 响应式设计 */
+@media (max-width: 1200px) {
+  .main-content {
+    grid-template-columns: 240px 1fr 280px;
+  }
+}
+
+@media (max-width: 992px) {
+  .main-content {
+    grid-template-columns: 200px 1fr 240px;
+  }
+}
+
+@media (max-width: 768px) {
+  .main-content {
+    grid-template-columns: 1fr;
+    grid-template-areas: "editor";
+  }
+
+  .main-content :deep(.sidebar),
+  .main-content :deep(.right-toolbar) {
+    display: none;
+  }
+}
 </style>
